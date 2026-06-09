@@ -69,8 +69,7 @@ src/indexer.rs  sharded block index and prefix binary search
 src/metrics.rs  latency summaries and stable metric printing
 src/types.rs    tiny pod/result types
 src/tests.rs    focused tests
-```
+``` 
+## System design 
 
-## System design
-
-![design](model-inference.svg)
+<img src="moderl-inference.svg" alt="Architecture diagram" width="1200"> 
