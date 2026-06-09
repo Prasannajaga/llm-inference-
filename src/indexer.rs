@@ -24,6 +24,7 @@ pub fn shard_for(hash: BlockHash) -> usize {
     shard_for_fibonacci(hash)
 }
 
+#[derive(Debug)]
 pub struct ShardedBlockIndexer {
     shards: Vec<RwLock<HashMap<BlockHash, HostBitmap>>>,
     alive: RwLock<HostBitmap>,

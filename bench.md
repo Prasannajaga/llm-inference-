@@ -464,3 +464,59 @@ cumulative query chain
 -> grouped binary prefix matching
 -> prefix depth per pod
 ```
+
+
+```bash
+--readers 10000
+```
+
+Means: start **10,000 query workers**.
+
+Example: imagine 10,000 users all asking, “Which pod should handle this request?” at the same time.
+
+```bash
+--writers 0
+```
+
+Means: start **0 update workers**.
+
+Example: no pods are being added/removed/changed while the queries run. It is read-only traffic.
+
+```bash
+--duration-secs 10
+```
+
+Means: run the test for **10 seconds**.
+
+Example: those 10,000 query workers keep asking questions repeatedly for 10 seconds, then the benchmark stops and prints results.
+
+```bash
+--pods 64
+```
+
+Means: simulate **64 pods/servers**.
+
+Example: the router has 64 possible backend pods it can choose from or check cache matches against.
+
+```bash
+--blocks 32
+```
+
+Means: each query chain has **32 blocks**.
+
+Example: pretend the incoming prompt/cache history is split into 32 chunks. The benchmark checks how many of those chunks each pod already has cached.
+
+So together:
+
+```bash
+cargo run --release -- bench-part2-concurrency \
+  --readers 10000 \
+  --writers 0 \
+  --duration-secs 10 \
+  --pods 64 \
+  --blocks 32
+```
+
+means:
+
+> “For 10 seconds, simulate 10,000 concurrent query workers repeatedly checking cache-prefix matches across 64 pods, where each query has 32 blocks, with no pod update traffic happening.”

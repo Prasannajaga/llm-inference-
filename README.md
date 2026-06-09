@@ -32,7 +32,6 @@ target/debug/cache-aware-routing --single "the cat sat on the table" --hits 1000
 target/debug/cache-aware-routing --disaggregated "the cat sat on the table" --hits 1000
 ```
 
-
 ## Part 2 Data-Layer Benchmark
 
 This benchmark follows Modular Part 2 exactly:
@@ -72,8 +71,6 @@ src/types.rs    tiny pod/result types
 src/tests.rs    focused tests
 ```
 
-
-## System design 
-
+## System design
 
 ![design](model-inference.svg)

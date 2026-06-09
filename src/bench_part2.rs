@@ -69,6 +69,7 @@ pub fn build_synthetic_state(pods: usize, blocks: usize, dropoffs: usize) -> Syn
     } else {
         dropoffs.max(1).min(blocks)
     };
+
     let step = if blocks == 0 {
         0
     } else {
@@ -88,6 +89,13 @@ pub fn build_synthetic_state(pods: usize, blocks: usize, dropoffs: usize) -> Syn
             indexer.register(pod, *hash);
         }
     }
+
+    println!(
+        "Built synthetic state: pods={}, blocks={}, dropoffs={}, distinct_depths={}",
+        pods, blocks, dropoffs, distinct_depths
+    );
+
+    println!("sharedIndexer: {:?}", indexer.shard_entry_counts());
 
     SyntheticPart2State {
         indexer,
@@ -271,11 +279,16 @@ pub fn bench_part2_query(iterations: usize, pods: usize, blocks: usize, dropoffs
     println!("query_blocks={blocks}");
     println!("distinct_dropoff_depths={dropoffs}");
     println!("iterations={iterations}");
+    print_synthetic_state(&state, pods);
     println!();
     println!("latency_p50_us={:.3}", ns_to_us(stats.p50_ns));
+    println!("latency_p50_ms={:.6}", ns_to_ms(stats.p50_ns));
     println!("latency_p95_us={:.3}", ns_to_us(stats.p95_ns));
+    println!("latency_p95_ms={:.6}", ns_to_ms(stats.p95_ns));
     println!("latency_p99_us={:.3}", ns_to_us(stats.p99_ns));
+    println!("latency_p99_ms={:.6}", ns_to_ms(stats.p99_ns));
     println!("latency_max_us={:.3}", ns_to_us(stats.max_ns));
+    println!("latency_max_ms={:.6}", ns_to_ms(stats.max_ns));
     println!();
     println!(
         "avg_shard_lookups_per_query={:.3}",
@@ -344,15 +357,22 @@ pub fn bench_part2_compare(iterations: usize, pods: usize, blocks: usize, dropof
     println!("query_blocks={blocks}");
     println!("distinct_dropoff_depths={dropoffs}");
     println!("iterations={iterations}");
+    print_synthetic_state(&state, pods);
     println!();
     println!("binary_p50_us={:.3}", ns_to_us(binary_stats.p50_ns));
+    println!("binary_p50_ms={:.6}", ns_to_ms(binary_stats.p50_ns));
     println!("binary_p95_us={:.3}", ns_to_us(binary_stats.p95_ns));
+    println!("binary_p95_ms={:.6}", ns_to_ms(binary_stats.p95_ns));
     println!("binary_p99_us={:.3}", ns_to_us(binary_stats.p99_ns));
+    println!("binary_p99_ms={:.6}", ns_to_ms(binary_stats.p99_ns));
     println!("binary_avg_shard_lookups={binary_avg_lookups:.3}");
     println!();
     println!("naive_p50_us={:.3}", ns_to_us(naive_stats.p50_ns));
+    println!("naive_p50_ms={:.6}", ns_to_ms(naive_stats.p50_ns));
     println!("naive_p95_us={:.3}", ns_to_us(naive_stats.p95_ns));
+    println!("naive_p95_ms={:.6}", ns_to_ms(naive_stats.p95_ns));
     println!("naive_p99_us={:.3}", ns_to_us(naive_stats.p99_ns));
+    println!("naive_p99_ms={:.6}", ns_to_ms(naive_stats.p99_ns));
     println!("naive_avg_shard_lookups={naive_avg_lookups:.3}");
     println!(
         "naive_avg_pod_bit_tests={:.3}",
@@ -412,10 +432,14 @@ pub fn bench_part2_concurrency(
     let pods = pods.max(1).min(MAX_PODS);
     let blocks = blocks.max(1);
     let duration_secs = duration_secs.max(1);
-    let state = build_synthetic_state(pods, blocks, 4);
-    let indexer = Arc::new(state.indexer);
-    let query_chain = Arc::new(state.query_chain);
-    let candidate_pods = state.candidate_pods;
+    let SyntheticPart2State {
+        indexer,
+        query_chain,
+        expected_depths,
+        candidate_pods,
+    } = build_synthetic_state(pods, blocks, 4);
+    let indexer = Arc::new(indexer);
+    let query_chain = Arc::new(query_chain);
     let stop = Arc::new(AtomicBool::new(false));
     let reader_ops = Arc::new(AtomicU64::new(0));
     let writer_ops = Arc::new(AtomicU64::new(0));
@@ -527,6 +551,13 @@ pub fn bench_part2_concurrency(
     println!("duration_secs={duration_secs}");
     println!("pods={pods}");
     println!("query_blocks={blocks}");
+    print_synthetic_state_parts(
+        indexer.as_ref(),
+        query_chain.as_ref(),
+        &expected_depths,
+        candidate_pods,
+        pods,
+    );
     println!();
     println!("reader_ops={reader_ops}");
     println!("writer_ops={writer_ops}");
@@ -540,12 +571,18 @@ pub fn bench_part2_concurrency(
     );
     println!();
     println!("query_p50_us={:.3}", ns_to_us(reader_stats.p50_ns));
+    println!("query_p50_ms={:.6}", ns_to_ms(reader_stats.p50_ns));
     println!("query_p95_us={:.3}", ns_to_us(reader_stats.p95_ns));
+    println!("query_p95_ms={:.6}", ns_to_ms(reader_stats.p95_ns));
     println!("query_p99_us={:.3}", ns_to_us(reader_stats.p99_ns));
+    println!("query_p99_ms={:.6}", ns_to_ms(reader_stats.p99_ns));
     println!();
     println!("event_p50_us={:.3}", ns_to_us(writer_stats.p50_ns));
+    println!("event_p50_ms={:.6}", ns_to_ms(writer_stats.p50_ns));
     println!("event_p95_us={:.3}", ns_to_us(writer_stats.p95_ns));
+    println!("event_p95_ms={:.6}", ns_to_ms(writer_stats.p95_ns));
     println!("event_p99_us={:.3}", ns_to_us(writer_stats.p99_ns));
+    println!("event_p99_ms={:.6}", ns_to_ms(writer_stats.p99_ns));
     println!();
     println!("dead_pod_returned_count={dead_pod_returned_count}");
     if dead_pod_returned_count != 0 {
@@ -604,8 +641,35 @@ fn print_shard_stats(name: &str, stats: &ShardStats) {
     println!("  hottest_shard={}", stats.hottest_shard);
 }
 
+fn print_synthetic_state(state: &SyntheticPart2State, pods: usize) {
+    print_synthetic_state_parts(
+        &state.indexer,
+        &state.query_chain,
+        &state.expected_depths,
+        state.candidate_pods,
+        pods,
+    );
+}
+
+fn print_synthetic_state_parts(
+    indexer: &ShardedBlockIndexer,
+    query_chain: &[BlockHash],
+    expected_depths: &[usize],
+    candidate_pods: HostBitmap,
+    pods: usize,
+) {
+    println!("indexer={indexer:#?}");
+    println!("query_chain={query_chain:?}");
+    println!("expected_depths={:?}", &expected_depths[..pods]);
+    println!("candidate_pods={:?}", candidate_pods.iter_set_bits());
+}
+
 fn ns_to_us(ns: u128) -> f64 {
     ns as f64 / 1_000.0
+}
+
+fn ns_to_ms(ns: u128) -> f64 {
+    ns as f64 / 1_000_000.0
 }
 
 fn ratio(numerator: u128, denominator: u128) -> f64 {
