@@ -1,12 +1,16 @@
+mod bench_part2;
 mod bitmap;
 mod hash;
 mod indexer;
+mod metrics;
 #[cfg(test)]
 mod tests;
 mod types;
 
 use std::env;
-use std::time::Instant;
+use std::io::{self, Write};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use bitmap::HostBitmap;
 use hash::prompt_to_cumulative_hashes;
@@ -16,8 +20,14 @@ use types::{
     RouteResult, ScoredCandidate,
 };
 
+const MOCK_LAYER_SLEEP: Duration = Duration::from_millis(100);
+
 fn main() {
     let args = env::args().skip(1).collect::<Vec<_>>();
+    if run_microbench_command(&args) {
+        return;
+    }
+
     match parse_args(&args) {
         Ok(config) => run_bench(config),
         Err(err) => {
@@ -33,9 +43,65 @@ fn print_usage() {
     eprintln!("usage:");
     eprintln!("  cargo run -- --single \"the cat sat on the table\" --hits 1000");
     eprintln!("  cargo run -- --disaggregated \"the cat sat on the table\" --hits 1000");
+    eprintln!(
+        "  cargo run -- bench-part2-query --iterations 100000 --pods 64 --blocks 32 --dropoffs 4"
+    );
+    eprintln!(
+        "  cargo run -- bench-part2-compare --iterations 100000 --pods 64 --blocks 32 --dropoffs 4"
+    );
+    eprintln!("  cargo run -- bench-part2-shards --chains 10000 --blocks-per-chain 64");
+    eprintln!(
+        "  cargo run -- bench-part2-concurrency --readers 8 --writers 2 --duration-secs 10 --pods 64 --blocks 32"
+    );
     eprintln!();
     eprintln!("if running the compiled binary directly:");
     eprintln!("  target/debug/cache-aware-routing --single \"prompt\" --hits 1000");
+}
+
+fn run_microbench_command(args: &[String]) -> bool {
+    let Some(command) = args.first().map(String::as_str) else {
+        return false;
+    };
+
+    match command {
+        "bench-part2-query" => bench_part2::bench_part2_query(
+            parse_usize(args, "--iterations", 100_000),
+            parse_usize(args, "--pods", 64),
+            parse_usize(args, "--blocks", 32),
+            parse_usize(args, "--dropoffs", 4),
+        ),
+        "bench-part2-compare" => bench_part2::bench_part2_compare(
+            parse_usize(args, "--iterations", 100_000),
+            parse_usize(args, "--pods", 64),
+            parse_usize(args, "--blocks", 32),
+            parse_usize(args, "--dropoffs", 4),
+        ),
+        "bench-part2-shards" => bench_part2::bench_part2_shards(
+            parse_usize(args, "--chains", 10_000),
+            parse_usize(args, "--blocks-per-chain", 64),
+        ),
+        "bench-part2-concurrency" => bench_part2::bench_part2_concurrency(
+            parse_usize(args, "--readers", 8),
+            parse_usize(args, "--writers", 2),
+            parse_u64(args, "--duration-secs", 10),
+            parse_usize(args, "--pods", 64),
+            parse_usize(args, "--blocks", 32),
+        ),
+        _ => return false,
+    }
+    true
+}
+
+fn parse_usize(args: &[String], flag: &str, default: usize) -> usize {
+    arg_value(args, flag)
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+fn parse_u64(args: &[String], flag: &str, default: u64) -> u64 {
+    arg_value(args, flag)
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(default)
 }
 
 fn parse_args(args: &[String]) -> Result<Config, String> {
@@ -80,7 +146,7 @@ fn run_bench(config: Config) {
     let mut selected = [0_usize; 8];
     let mut last = RouteResult::default();
 
-    for _ in 0..config.hits {
+    for request_id in 1..=config.hits {
         let start = Instant::now();
 
         // The benchmark loop intentionally keeps these phases separate.
@@ -90,10 +156,16 @@ fn run_bench(config: Config) {
         let picked = pick(&pods, &scored, config.mode).expect("static pods provide a route");
         last = execute(&picked);
 
-        latencies.push(start.elapsed().as_secs_f64() * 1_000_000.0);
+        let latency_ms = start.elapsed().as_secs_f64() * 1_000.0;
+        latencies.push(latency_ms);
         if let Some(pod_id) = last.response_pod {
             selected[pod_id] += 1;
         }
+
+        println!(
+            "request {request_id}: latency={latency_ms:.3} ms plan={picked:?} result={last:?}"
+        );
+        io::stdout().flush().expect("flush streamed request detail");
     }
 
     latencies.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -109,9 +181,10 @@ fn run_bench(config: Config) {
     println!("cache-hit iterations: {}", config.hits);
     println!("last result: {:?}", last);
     println!("last mock response: {}", last.text);
-    println!("avg route time: {avg:.3} us");
-    println!("p50 route time: {:.3} us", percentile(&latencies, 50));
-    println!("p95 route time: {:.3} us", percentile(&latencies, 95));
+    println!("avg route time: {avg:.3} ms");
+    println!("p5 route time: {:.3} ms", percentile(&latencies, 5));
+    println!("p50 route time: {:.3} ms", percentile(&latencies, 50));
+    println!("p95 route time: {:.3} ms", percentile(&latencies, 95));
     println!("selected response pod counts: {:?}", selected);
 }
 
@@ -126,16 +199,16 @@ fn filter(pods: &[Pod], indexer: &ShardedBlockIndexer, mode: Mode) -> Vec<Filter
     match mode {
         Mode::Single => vec![FilteredCandidates {
             role: PodRole::Both,
-            hosts: role_candidates(pods, PodRole::Both).and(indexer.alive()),
+            candidate_pods: role_candidates(pods, PodRole::Both).and(indexer.alive()),
         }],
         Mode::Disaggregated => vec![
             FilteredCandidates {
                 role: PodRole::Prefill,
-                hosts: role_candidates(pods, PodRole::Prefill).and(indexer.alive()),
+                candidate_pods: role_candidates(pods, PodRole::Prefill).and(indexer.alive()),
             },
             FilteredCandidates {
                 role: PodRole::Decode,
-                hosts: role_candidates(pods, PodRole::Decode).and(indexer.alive()),
+                candidate_pods: role_candidates(pods, PodRole::Decode).and(indexer.alive()),
             },
         ],
     }
@@ -154,11 +227,11 @@ fn score(
             let prefix_lengths = longest_prefix_lengths_for_candidates(
                 indexer,
                 &prepared.cumulative_hashes,
-                candidates.hosts,
+                candidates.candidate_pods,
             );
 
             candidates
-                .hosts
+                .candidate_pods
                 .iter_set_bits()
                 .into_iter()
                 .map(|pod_id| {
@@ -208,6 +281,7 @@ fn execute(plan: &ExecutionPlan) -> RouteResult {
 }
 
 fn single_execution(pod_id: usize) -> RouteResult {
+    thread::sleep(MOCK_LAYER_SLEEP);
     RouteResult {
         prefill_pod: None,
         decode_pod: None,
@@ -217,10 +291,12 @@ fn single_execution(pod_id: usize) -> RouteResult {
 }
 
 fn prefill_execution(pod_id: usize) -> String {
+    thread::sleep(MOCK_LAYER_SLEEP);
     format!("cache-transfer-from-pod-{pod_id}")
 }
 
 fn decode_execution(pod_id: usize, transfer_id: &str) -> RouteResult {
+    thread::sleep(MOCK_LAYER_SLEEP);
     RouteResult {
         prefill_pod: transfer_id
             .rsplit_once('-')
@@ -234,6 +310,15 @@ fn decode_execution(pod_id: usize, transfer_id: &str) -> RouteResult {
 fn warm_indexer(prompt: &str, pods: &[Pod]) -> ShardedBlockIndexer {
     let indexer = ShardedBlockIndexer::new(pods.len());
     let hashes = prompt_to_cumulative_hashes(prompt);
+
+    println!(
+        "warming indexer with prompt hashes: {}",
+        hashes
+            .iter()
+            .map(|h| format!("{h:016x}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     // Pod 0 owns the full prefix chain; pod 1 owns only the first prefix.
     for hash in &hashes {
@@ -306,13 +391,13 @@ fn locality_bonus(pods: &[Pod], pod_id: usize, role: PodRole, mode: Mode) -> usi
 fn static_pods() -> Vec<Pod> {
     vec![
         Pod::new(0, PodRole::Both, "node-a"),
-        Pod::new(1, PodRole::Prefill, "node-a"),
+        Pod::new(1, PodRole::Prefill, "node-b"),
         Pod::new(2, PodRole::Prefill, "node-b"),
-        Pod::new(3, PodRole::Decode, "node-b"),
-        Pod::new(4, PodRole::Prefill, "node-c"),
-        Pod::new(5, PodRole::Decode, "node-c"),
-        Pod::new(6, PodRole::Decode, "node-d"),
-        Pod::new(7, PodRole::Decode, "node-d"),
+        Pod::new(3, PodRole::Decode, "node-c"),
+        Pod::new(4, PodRole::Prefill, "node-e"),
+        Pod::new(5, PodRole::Decode, "node-f"),
+        Pod::new(6, PodRole::Decode, "node-g"),
+        Pod::new(7, PodRole::Decode, "node-h"),
     ]
 }
 

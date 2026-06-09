@@ -44,7 +44,7 @@ pub struct PreparedRequest {
 #[derive(Clone, Debug)]
 pub struct FilteredCandidates {
     pub role: PodRole,
-    pub hosts: HostBitmap,
+    pub candidate_pods: HostBitmap,
 }
 
 #[derive(Clone, Debug)]

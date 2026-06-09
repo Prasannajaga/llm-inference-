@@ -1,3 +1,6 @@
+use crate::bench_part2::{
+    build_synthetic_state, query_prefix_depths_binary, query_prefix_depths_naive,
+};
 use crate::bitmap::HostBitmap;
 use crate::hash::prompt_to_cumulative_hashes;
 use crate::indexer::{longest_prefix_lengths_for_candidates, ShardedBlockIndexer};
@@ -147,4 +150,59 @@ fn visible_pipeline_runs_prepare_filter_score_pick_execute() {
 
     assert!(matches!(picked, ExecutionPlan::Single { pod_id: 0 }));
     assert_eq!(result.response_pod, Some(0));
+}
+
+#[test]
+fn part2_binary_depths_match_synthetic_dropoffs() {
+    for (pods, blocks, dropoffs) in [(8, 8, 4), (64, 32, 4), (256, 128, 8)] {
+        let state = build_synthetic_state(pods, blocks, dropoffs);
+        let result =
+            query_prefix_depths_binary(&state.indexer, &state.query_chain, state.candidate_pods);
+
+        assert_eq!(
+            &result.depths[..pods],
+            &state.expected_depths[..pods],
+            "pods={pods} blocks={blocks} dropoffs={dropoffs}"
+        );
+        assert!(result.shard_lookups > 0);
+        assert!(result.bitmap_intersections > 0);
+        assert!(result.search_frames > 0);
+    }
+}
+
+#[test]
+fn part2_dead_pods_are_masked_from_prefix_results() {
+    let state = build_synthetic_state(8, 8, 4);
+    state.indexer.shutdown(0);
+    state.indexer.shutdown(3);
+
+    let result =
+        query_prefix_depths_binary(&state.indexer, &state.query_chain, state.candidate_pods);
+
+    assert_eq!(result.depths[0], 0);
+    assert_eq!(result.depths[3], 0);
+    assert_eq!(result.depths[1], state.expected_depths[1]);
+}
+
+#[test]
+fn part2_evicted_suffix_reduces_prefix_depth() {
+    let state = build_synthetic_state(1, 8, 1);
+    state.indexer.evict(0, state.query_chain[7]);
+
+    let result =
+        query_prefix_depths_binary(&state.indexer, &state.query_chain, state.candidate_pods);
+
+    assert_eq!(result.depths[0], 7);
+}
+
+#[test]
+fn part2_binary_and_naive_queries_agree() {
+    let state = build_synthetic_state(64, 32, 4);
+    let binary =
+        query_prefix_depths_binary(&state.indexer, &state.query_chain, state.candidate_pods);
+    let naive = query_prefix_depths_naive(&state.indexer, &state.query_chain, state.candidate_pods);
+
+    assert_eq!(binary.depths, naive.depths);
+    assert!(naive.shard_lookups > binary.shard_lookups);
+    assert!(naive.pod_bit_tests > 0);
 }

@@ -80,14 +80,18 @@ impl HostBitmap {
 
     pub fn iter_set_bits(&self) -> Vec<usize> {
         let mut bits = Vec::new();
+        self.for_each_set_bit(|pod_id| bits.push(pod_id));
+        bits
+    }
+
+    pub fn for_each_set_bit(&self, mut visit: impl FnMut(usize)) {
         for (word_index, word) in self.words.iter().enumerate() {
             let mut remaining = *word;
             while remaining != 0 {
                 let bit = remaining.trailing_zeros() as usize;
-                bits.push(word_index * BITS_PER_WORD + bit);
+                visit(word_index * BITS_PER_WORD + bit);
                 remaining &= remaining - 1;
             }
         }
-        bits
     }
 }
